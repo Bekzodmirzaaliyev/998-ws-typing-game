@@ -25,7 +25,7 @@ function createRoomId() {
 io.on("connection", (socket) => {
   socket.on("join_game", (username) => {
     let roomId = Object.keys(rooms).find(
-      (id) => Object.keys(rooms[id].players).length < 4
+      (id) => Object.keys(rooms[id].players).length < 10
     );
 
     if (!roomId) {
