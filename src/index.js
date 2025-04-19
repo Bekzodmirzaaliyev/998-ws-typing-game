@@ -25,7 +25,7 @@ function createRoomId() {
 io.on("connection", (socket) => {
   socket.on("join_game", (username) => {
     let roomId = Object.keys(rooms).find(
-      (id) => Object.keys(rooms[id].players).length < 10
+      (id) => Object.keys(rooms[id].players).length < 4
     );
 
     if (!roomId) {
@@ -46,7 +46,7 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("players_update", rooms[roomId].players);
 
     if (
-      Object.keys(rooms[roomId].players).length >= 2 &&
+      Object.keys(rooms[roomId].players).length >= 10 &&
       !rooms[roomId].startTime
     ) {
       rooms[roomId].startTime = Date.now();
