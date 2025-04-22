@@ -1,7 +1,7 @@
 const express = require("express");
 const http = require("http");
-const cors = require("cors");
 const { Server } = require("socket.io");
+const cors = require("cors");
 
 const app = express();
 app.use(cors());
@@ -10,31 +10,36 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST"],
   },
 });
 
-const text =
-  "Typing Race is a real-time multiplayer game where users compete by typing the given text as fast and accurately as possible.";
+const generateText = () =>
+  "Typing speed is the measurement of how fast someone can type words accurately in a given period.";
+
 const rooms = {};
 
-function createRoomId() {
-  return Math.random().toString(36).substring(2, 8);
-}
-
 io.on("connection", (socket) => {
-  socket.on("join_game", (username) => {
-    let roomId = Object.keys(rooms).find(
-      (id) => Object.keys(rooms[id].players).length < 4
-    );
+  console.log("🔌 New user connected:", socket.id);
 
-    if (!roomId) {
-      roomId = createRoomId();
-      rooms[roomId] = { players: {}, text, startTime: null };
-    }
+  // Create a new room
+  socket.on("create_game", (username, callback) => {
+    const roomId = Math.random().toString(36).substring(2, 8);
+    const text = generateText();
+    rooms[roomId] = {
+      players: {},
+      text,
+      startTime: null,
+    };
+    callback(roomId); // send room ID to client
+  });
+
+  // Join existing room
+  socket.on("join_game", ({ username, roomId }) => {
+    const room = rooms[roomId];
+    if (!room) return;
 
     socket.join(roomId);
-    rooms[roomId].players[socket.id] = {
+    room.players[socket.id] = {
       username,
       progress: 0,
       typedText: "",
@@ -44,46 +49,43 @@ io.on("connection", (socket) => {
     };
     socket.roomId = roomId;
 
-    socket.emit("text", rooms[roomId].text);
-    io.to(roomId).emit("players_update", rooms[roomId].players);
+    socket.emit("text", room.text);
+    io.to(roomId).emit("players_update", room.players);
 
-    if (
-      Object.keys(rooms[roomId].players).length >= 2 &&
-      !rooms[roomId].startTime
-    ) {
-      rooms[roomId].startTime = Date.now();
-      io.to(roomId).emit("start_timer", rooms[roomId].startTime);
+    // Start countdown when 2+ players
+    if (Object.keys(room.players).length >= 2 && !room.startTime) {
+      room.startTime = Date.now();
+      io.to(roomId).emit("start_timer", room.startTime);
     }
   });
 
+  // Handle player progress
   socket.on("progress", ({ typedText }) => {
     const roomId = socket.roomId;
-    if (!roomId || !rooms[roomId]) return;
+    const room = rooms[roomId];
+    if (!room || !room.players[socket.id]) return;
 
-    const player = rooms[roomId].players[socket.id];
-    if (!player) return;
+    const player = room.players[socket.id];
+    const correctText = room.text;
 
-    const correctText = rooms[roomId].text;
-
-    // ✅ Запуск времени при первом вводе
-    if (!player.startTypingTime && typedText.length === 1) {
+    // WPM calculation
+    if (!player.startTypingTime) {
       player.startTypingTime = Date.now();
     }
 
-    // Проверка: текст должен точно совпадать
-    const isCorrect = correctText.slice(0, typedText.length) === typedText;
+    player.typedText = typedText;
+    player.progress = typedText.length / correctText.length;
+
+    const timeSpentMin = (Date.now() - player.startTypingTime) / 60000;
+    const wordsTyped = typedText.trim().split(/\s+/).length;
+    player.wpm = Math.floor(wordsTyped / timeSpentMin);
+
+    const isCorrect = correctText.startsWith(typedText);
     socket.emit("typing_feedback", { isCorrect });
 
-    player.typedText = typedText;
-    player.progress = Math.min(typedText.length / correctText.length, 1);
+    io.to(roomId).emit("players_update", room.players);
 
-    // ✅ Расчёт WPM (слова/минуту)
-    const minutes = (Date.now() - player.startTypingTime) / 60000;
-    const wordCount = typedText.trim().split(/\s+/).length;
-    player.wpm = minutes > 0 ? Math.floor(wordCount / minutes) : 0;
-
-    io.to(roomId).emit("players_update", rooms[roomId].players);
-
+    // If finished
     if (typedText === correctText && !player.finished) {
       player.finished = true;
       io.to(roomId).emit("game_finished", {
@@ -93,35 +95,41 @@ io.on("connection", (socket) => {
     }
   });
 
+  // Restart game
   socket.on("restart_game", (roomId) => {
-    if (rooms[roomId]) {
-      Object.keys(rooms[roomId].players).forEach((id) => {
-        rooms[roomId].players[id].progress = 0;
-        rooms[roomId].players[id].typedText = "";
-        rooms[roomId].players[id].finished = false;
-        rooms[roomId].players[id].startTypingTime = null;
-        rooms[roomId].players[id].wpm = 0;
-      });
-      rooms[roomId].startTime = Date.now();
-      io.to(roomId).emit("text", rooms[roomId].text);
-      io.to(roomId).emit("players_update", rooms[roomId].players);
-      io.to(roomId).emit("restart");
-      io.to(roomId).emit("start_timer", rooms[roomId].startTime);
+    const room = rooms[roomId];
+    if (!room) return;
+
+    room.text = generateText();
+    room.startTime = null;
+
+    for (const id in room.players) {
+      room.players[id].progress = 0;
+      room.players[id].typedText = "";
+      room.players[id].finished = false;
+      room.players[id].startTypingTime = null;
+      room.players[id].wpm = 0;
     }
+
+    io.to(roomId).emit("text", room.text);
+    io.to(roomId).emit("restart");
+    io.to(roomId).emit("players_update", room.players);
   });
 
   socket.on("disconnect", () => {
     const roomId = socket.roomId;
-    if (roomId && rooms[roomId]) {
-      delete rooms[roomId].players[socket.id];
-      io.to(roomId).emit("players_update", rooms[roomId].players);
-      if (Object.keys(rooms[roomId].players).length === 0) {
-        delete rooms[roomId];
+    const room = rooms[roomId];
+    if (room) {
+      delete room.players[socket.id];
+      io.to(roomId).emit("players_update", room.players);
+
+      if (Object.keys(room.players).length === 0) {
+        delete rooms[roomId]; // cleanup
       }
     }
+    console.log("❌ User disconnected:", socket.id);
   });
 });
 
-server.listen(3000, () =>
-  console.log("Server running on http://localhost:3000")
-);
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
