@@ -16,7 +16,7 @@ const io = new Server(server, {
 
 const text =
   "Typing Race is a real-time multiplayer game where users compete by typing the given text as fast and accurately as possible.";
-const rooms = {}; // roomId -> { players, text }
+const rooms = {};
 
 function createRoomId() {
   return Math.random().toString(36).substring(2, 8);
@@ -39,6 +39,8 @@ io.on("connection", (socket) => {
       progress: 0,
       typedText: "",
       finished: false,
+      startTypingTime: null,
+      wpm: 0,
     };
     socket.roomId = roomId;
 
@@ -46,7 +48,7 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("players_update", rooms[roomId].players);
 
     if (
-      Object.keys(rooms[roomId].players).length >= 10 &&
+      Object.keys(rooms[roomId].players).length >= 2 &&
       !rooms[roomId].startTime
     ) {
       rooms[roomId].startTime = Date.now();
@@ -54,29 +56,40 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("progress", ({ progress, typedText }) => {
+  socket.on("progress", ({ typedText }) => {
     const roomId = socket.roomId;
-    if (roomId && rooms[roomId]) {
-      const player = rooms[roomId].players[socket.id];
-      if (player) {
-        player.progress = progress;
-        player.typedText = typedText;
+    if (!roomId || !rooms[roomId]) return;
 
-        // Error highlighting
-        const correctText = rooms[roomId].text;
-        const isCorrect = correctText.startsWith(typedText);
-        socket.emit("typing_feedback", { isCorrect });
+    const player = rooms[roomId].players[socket.id];
+    if (!player) return;
 
-        io.to(roomId).emit("players_update", rooms[roomId].players);
+    const correctText = rooms[roomId].text;
 
-        // Game finished check
-        if (progress === 100 && !player.finished) {
-          player.finished = true;
-          io.to(roomId).emit("game_finished", {
-            winner: player.username,
-          });
-        }
-      }
+    // ✅ Запуск времени при первом вводе
+    if (!player.startTypingTime && typedText.length === 1) {
+      player.startTypingTime = Date.now();
+    }
+
+    // Проверка: текст должен точно совпадать
+    const isCorrect = correctText.slice(0, typedText.length) === typedText;
+    socket.emit("typing_feedback", { isCorrect });
+
+    player.typedText = typedText;
+    player.progress = Math.min(typedText.length / correctText.length, 1);
+
+    // ✅ Расчёт WPM (слова/минуту)
+    const minutes = (Date.now() - player.startTypingTime) / 60000;
+    const wordCount = typedText.trim().split(/\s+/).length;
+    player.wpm = minutes > 0 ? Math.floor(wordCount / minutes) : 0;
+
+    io.to(roomId).emit("players_update", rooms[roomId].players);
+
+    if (typedText === correctText && !player.finished) {
+      player.finished = true;
+      io.to(roomId).emit("game_finished", {
+        winner: player.username,
+        wpm: player.wpm,
+      });
     }
   });
 
@@ -86,6 +99,8 @@ io.on("connection", (socket) => {
         rooms[roomId].players[id].progress = 0;
         rooms[roomId].players[id].typedText = "";
         rooms[roomId].players[id].finished = false;
+        rooms[roomId].players[id].startTypingTime = null;
+        rooms[roomId].players[id].wpm = 0;
       });
       rooms[roomId].startTime = Date.now();
       io.to(roomId).emit("text", rooms[roomId].text);
